@@ -156,6 +156,21 @@
       color: #334155;
       letter-spacing: .5px;
     }
+
+    .key-label {
+      position: absolute;
+      bottom: 6px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 9px;
+      font-family: monospace;
+      line-height: 1.2;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .wk .key-label { color: #888; }
+    .bk .key-label { color: #666; font-size: 8px; bottom: 4px; }
   </style>
 </head>
 <body>
@@ -169,8 +184,8 @@
     </div>
     <div class="field">
       <label>Segments</label>
-      <input type="number" id="segInput" min="12" max="108" value="24" step="1">
-      <span class="hint">keys &nbsp;(12 – 108)</span>
+      <input type="number" id="segInput" min="12" max="84" value="24" step="1">
+      <span class="hint">keys &nbsp;(12 – 84)</span>
     </div>
     <button id="loadBtn" disabled>Load</button>
     <div id="status">Select an audio file to get started.</div>
@@ -182,10 +197,27 @@
     </div>
   </div>
 
-  <p id="tip">Hold a key to play · Drag across keys to scan segments</p>
+  <p id="tip">Hold a key to play · Drag to scan · Keyboard rows 1–= / Q–] / A–' / Z–/ · Shift to access upper range</p>
 
   <script>
   (() => {
+    /* ── keyboard layout ── */
+    const KEY_ORDER = [
+      'Digit1','Digit2','Digit3','Digit4','Digit5','Digit6','Digit7','Digit8','Digit9','Digit0','Minus','Equal',
+      'KeyQ','KeyW','KeyE','KeyR','KeyT','KeyY','KeyU','KeyI','KeyO','KeyP','BracketLeft','BracketRight',
+      'KeyA','KeyS','KeyD','KeyF','KeyG','KeyH','KeyJ','KeyK','KeyL','Semicolon','Quote',
+      'KeyZ','KeyX','KeyC','KeyV','KeyB','KeyN','KeyM','Comma','Period','Slash'
+    ];
+    const KEY_LABELS = [
+      '1','2','3','4','5','6','7','8','9','0','-','=',
+      'Q','W','E','R','T','Y','U','I','O','P','[',']',
+      'A','S','D','F','G','H','J','K','L',';',"'",
+      'Z','X','C','V','B','N','M',',','.','/'
+    ];
+    const SHIFT_OFFSET = KEY_ORDER.length; // 45
+    const keyMap = {};
+    KEY_ORDER.forEach((code, i) => { keyMap[code] = i; });
+
     // semitone → black key?
     const IS_BLK = [0,1,0,1,0,0,1,0,1,0,1,0].map(Boolean);
     // white semitones: index within the 7 white keys of the octave
@@ -201,7 +233,9 @@
     let segN     = 24;
     const playing  = {};   // index → BufferSourceNode
     const touchMap = {};   // touch identifier → key index
+    const kbPressed = {};  // e.code → segment index currently playing
     let mouseKey = null;
+    let shiftHeld = false;
 
     /* DOM */
     const fileEl   = document.getElementById('fileInput');
@@ -221,7 +255,7 @@
       const file = fileEl.files[0];
       if (!file) return;
 
-      const n = clamp(parseInt(segEl.value) || 24, 12, 108);
+      const n = clamp(parseInt(segEl.value) || 24, 12, 84);
       segEl.value = n;
 
       btnEl.disabled = true;
@@ -276,6 +310,14 @@
       el.className = `key ${cls}`;
       el.dataset.index = index;
       el.style.cssText = `left:${left}px;top:0;width:${w}px;height:${h}px;`;
+      if (index < SHIFT_OFFSET * 2) {
+        const lbl = document.createElement('span');
+        lbl.className = 'key-label';
+        lbl.textContent = index < SHIFT_OFFSET
+          ? KEY_LABELS[index]
+          : '⇧' + KEY_LABELS[index - SHIFT_OFFSET];
+        el.appendChild(lbl);
+      }
       return el;
     }
 
@@ -374,6 +416,51 @@
     };
     piano.addEventListener('touchend',    touchEnd);
     piano.addEventListener('touchcancel', touchEnd);
+
+    /* ── keyboard ── */
+    document.addEventListener('keydown', e => {
+      if (!buf || document.activeElement.tagName === 'INPUT') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      if (e.key === 'Shift') {
+        if (shiftHeld) return;
+        shiftHeld = true;
+        Object.entries(kbPressed).forEach(([code, oldIdx]) => {
+          const newIdx = keyMap[code] + SHIFT_OFFSET;
+          releaseKey(oldIdx);
+          if (newIdx < segN) { kbPressed[code] = newIdx; pressKey(newIdx); }
+          else { delete kbPressed[code]; }
+        });
+        return;
+      }
+
+      if (e.repeat) return;
+      const base = keyMap[e.code];
+      if (base === undefined) return;
+      e.preventDefault();
+      const idx = base + (shiftHeld ? SHIFT_OFFSET : 0);
+      if (idx >= segN || kbPressed[e.code] !== undefined) return;
+      kbPressed[e.code] = idx;
+      pressKey(idx);
+    });
+
+    document.addEventListener('keyup', e => {
+      if (e.key === 'Shift') {
+        if (!shiftHeld) return;
+        shiftHeld = false;
+        Object.entries(kbPressed).forEach(([code, oldIdx]) => {
+          const newIdx = keyMap[code];
+          releaseKey(oldIdx);
+          if (newIdx < segN) { kbPressed[code] = newIdx; pressKey(newIdx); }
+          else { delete kbPressed[code]; }
+        });
+        return;
+      }
+      if (kbPressed[e.code] !== undefined) {
+        releaseKey(kbPressed[e.code]);
+        delete kbPressed[e.code];
+      }
+    });
 
     /* ── helpers ── */
     function setStatus(msg) { statusEl.textContent = msg; }
