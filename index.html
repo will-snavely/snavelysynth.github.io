@@ -157,6 +157,44 @@
       letter-spacing: .5px;
     }
 
+    #adsr-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px 28px;
+    }
+
+    .adsr-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .adsr-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .adsr-header label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #64748b;
+    }
+
+    .slider-val {
+      font-size: 0.78rem;
+      font-family: monospace;
+      color: #a78bfa;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #7c3aed;
+      cursor: pointer;
+      height: 4px;
+    }
+
     .key-label {
       position: absolute;
       bottom: 6px;
@@ -189,6 +227,25 @@
     </div>
     <button id="loadBtn" disabled>Load</button>
     <div id="status">Select an audio file to get started.</div>
+  </div>
+
+  <div class="panel" id="adsr-panel">
+    <div class="adsr-field">
+      <div class="adsr-header"><label>Attack</label><span class="slider-val" id="atkVal">0.01s</span></div>
+      <input type="range" id="atkSlider" min="0" max="2" step="0.01" value="0.01">
+    </div>
+    <div class="adsr-field">
+      <div class="adsr-header"><label>Decay</label><span class="slider-val" id="decVal">0.10s</span></div>
+      <input type="range" id="decSlider" min="0" max="2" step="0.01" value="0.1">
+    </div>
+    <div class="adsr-field">
+      <div class="adsr-header"><label>Sustain</label><span class="slider-val" id="susVal">0.80</span></div>
+      <input type="range" id="susSlider" min="0" max="1" step="0.01" value="0.8">
+    </div>
+    <div class="adsr-field">
+      <div class="adsr-header"><label>Release</label><span class="slider-val" id="relVal">0.30s</span></div>
+      <input type="range" id="relSlider" min="0" max="3" step="0.01" value="0.3">
+    </div>
   </div>
 
   <div id="kb-wrap" hidden>
@@ -231,11 +288,12 @@
     let actx     = null;
     let buf      = null;
     let segN     = 24;
-    const playing  = {};   // index → BufferSourceNode
+    const playing  = {};   // index → { src, gain }
     const touchMap = {};   // touch identifier → key index
     const kbPressed = {};  // e.code → segment index currently playing
     let mouseKey = null;
     let shiftHeld = false;
+    const adsr = { a: 0.01, d: 0.10, s: 0.80, r: 0.30 };
 
     /* DOM */
     const fileEl   = document.getElementById('fileInput');
@@ -325,23 +383,55 @@
     function playKey(i) {
       if (!buf || !actx) return;
       actx.resume();
-      stopKey(i);
-      const src = actx.createBufferSource();
+      // Immediately cut any note already on this slot
+      if (playing[i]) {
+        try { playing[i].src.stop(); } catch (_) {}
+        delete playing[i];
+      }
+
+      const gain = actx.createGain();
+      const src  = actx.createBufferSource();
       src.buffer = buf;
-      src.connect(actx.destination);
+      src.connect(gain);
+      gain.connect(actx.destination);
+
+      const now = actx.currentTime;
+      gain.gain.setValueAtTime(0, now);
+      if (adsr.a > 0) {
+        gain.gain.linearRampToValueAtTime(1, now + adsr.a);
+      } else {
+        gain.gain.setValueAtTime(1, now);
+      }
+      if (adsr.d > 0) {
+        gain.gain.linearRampToValueAtTime(adsr.s, now + adsr.a + adsr.d);
+      } else {
+        gain.gain.setValueAtTime(adsr.s, now + adsr.a);
+      }
+
       src.start(0, i * buf.duration / segN);
-      playing[i] = src;
+      playing[i] = { src, gain };
     }
 
     function stopKey(i) {
-      if (playing[i]) {
-        try { playing[i].stop(); } catch (_) {}
-        delete playing[i];
+      if (!playing[i]) return;
+      const { src, gain } = playing[i];
+      delete playing[i];
+      const now = actx.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      if (adsr.r > 0) {
+        gain.gain.linearRampToValueAtTime(0, now + adsr.r);
+        try { src.stop(now + adsr.r); } catch (_) {}
+      } else {
+        try { src.stop(); } catch (_) {}
       }
     }
 
     function stopAll() {
-      Object.keys(playing).forEach(k => stopKey(Number(k)));
+      Object.keys(playing).forEach(k => {
+        try { playing[k].src.stop(); } catch (_) {}
+        delete playing[k];
+      });
     }
 
     /* ── key press/release ── */
@@ -460,6 +550,21 @@
         releaseKey(kbPressed[e.code]);
         delete kbPressed[e.code];
       }
+    });
+
+    /* ── ADSR sliders ── */
+    [
+      ['atkSlider', 'atkVal', 'a', v => v.toFixed(2) + 's'],
+      ['decSlider', 'decVal', 'd', v => v.toFixed(2) + 's'],
+      ['susSlider', 'susVal', 's', v => v.toFixed(2)],
+      ['relSlider', 'relVal', 'r', v => v.toFixed(2) + 's'],
+    ].forEach(([sliderId, valId, key, fmt]) => {
+      const slider = document.getElementById(sliderId);
+      const valEl  = document.getElementById(valId);
+      slider.addEventListener('input', () => {
+        adsr[key] = parseFloat(slider.value);
+        valEl.textContent = fmt(adsr[key]);
+      });
     });
 
     /* ── helpers ── */
